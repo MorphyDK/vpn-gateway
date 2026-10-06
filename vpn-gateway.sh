@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  vpn-gateway.sh - VPN Gateway with kill switch & port forwarding
-#  Version : 1.0
+#  Version : 1.1
 #  Author  : MorphyDK
 #  License : MIT
 #  Tested  : Ubuntu 24.04 Desktop
@@ -27,7 +27,7 @@
 # =============================================================================
 set -uo pipefail
 
-VERSION="1.0"
+VERSION="1.1"
 CONF_FILE="/etc/vpn-gateway.conf"
 OLD_CONF_FILE="/etc/torguard-gateway.conf"          # v2.x settings, migrated
 LOG_FILE="/var/log/vpn-gateway.log"
@@ -41,6 +41,21 @@ STATE_FILE="$STATE_DIR/keeper.state"
 CHAIN_DNAT="VPNGW_DNAT"
 CHAIN_FWD="VPNGW_FWD"
 TTY="/dev/tty"
+REPO_URL="https://github.com/MorphyDK/vpn-gateway"
+SETUP_MARKER="/etc/vpn-gateway.setup"
+
+# Components:  command | package | required (1) or optional (0) | what it is for
+DEPS=(
+    "iptables|iptables|1|firewall rules: kill switch, NAT, port forwarding"
+    "ip6tables|iptables|1|IPv6 leak protection"
+    "ip|iproute2|1|interfaces and routing"
+    "sysctl|procps|1|IP forwarding settings"
+    "pgrep|procps|1|VPN app detection"
+    "flock|util-linux|1|safe rebuilds (locking)"
+    "ping|iputils-ping|0|client reachability check"
+    "curl|curl|0|public IP through the tunnel"
+    "natpmpc|natpmpc|0|Proton VPN port forwarding (NAT-PMP)"
+)
 LOCK_FILE="/run/vpn-gateway.lock"
 IN_SERVICE=0                 # 1 when running as the background watcher
 
@@ -1489,6 +1504,154 @@ main_menu() {
 }
 
 # =============================================================================
+#  First-run setup: welcome, component check, install bar, validation
+# =============================================================================
+missing_deps() {  # prints the DEPS lines whose command is missing
+    local line cmd
+    for line in "${DEPS[@]}"; do
+        cmd=${line%%|*}
+        command -v "$cmd" >/dev/null 2>&1 || echo "$line"
+    done
+}
+
+draw_bar() {  # $1=percent $2=text
+    local pct=$1 text=${2:0:34} width=40 fill
+    fill=$(( pct * width / 100 ))
+    printf '\r  %s[%s%s%s%s%s]%s %s%3d%%%s  %s%s%s\033[K' \
+        "$GRY" "$CYN" "$(rep '█' "$fill")" "$GRY" "$(rep '░' $(( width - fill )))" "$GRY" "$R" \
+        "$WHT" "$pct" "$R" "$GRY" "$text" "$R" >"$TTY"
+}
+
+progress_step() {  # $1=from% $2=to% $3=text, rest = command - animated bar while it runs
+    local from=$1 to=$2 text=$3 pid rc p
+    shift 3
+    "$@" >>"$LOG_FILE" 2>&1 &
+    pid=$!
+    p=$from
+    while kill -0 "$pid" 2>/dev/null; do
+        draw_bar "$p" "$text"
+        if (( p < to - 1 )); then p=$(( p + 1 )); fi
+        sleep 0.25
+    done
+    wait "$pid"
+    rc=$?
+    draw_bar "$to" "$text"
+    return "$rc"
+}
+
+step_line() {  # $1=ok|warn|fail $2=text - prints a result line above the bar
+    local icon
+    case $1 in ok) icon="${GRN}✔${R}" ;; warn) icon="${YLW}!${R}" ;; *) icon="${RED}✘${R}" ;; esac
+    printf '\r\033[K    %s %s\n' "$icon" "$2" >"$TTY"
+}
+
+apt_update()  { apt-get -o DPkg::Lock::Timeout=180 update -qq; }
+apt_install() { DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y -qq "$1"; }
+
+run_setup() {  # $1 = welcome (first start) | repair (something went missing)
+    local line cmd pkg req desc key i n from to step problems=0
+    local -a pkgs=()
+
+    if [[ $1 == welcome ]]; then
+        banner
+        {
+            title "$MAG" "Welcome"
+            printf '\n    %sVPN Gateway v%s%s\n' "$WHT" "$VERSION" "$R"
+            printf '    %sTurns this Ubuntu machine into a VPN gateway for your LAN.%s\n' "$TXT" "$R"
+            printf '    %skill switch · port forwarding · TorGuard & Proton VPN auto-follow%s\n\n' "$GRY" "$R"
+            printf '    %s%-10s%s %s%s%s\n' "$GRY" "PROJECT" "$R" "$CYN" "$REPO_URL" "$R"
+            printf '    %s%-10s%s %s\n' "$GRY" "AUTHOR" "$R" "MorphyDK"
+            printf '    %s%-10s%s %s\n\n' "$GRY" "LICENSE" "$R" "MIT"
+            printf '    %sThis first-time setup checks your system and installs anything%s\n' "$TXT" "$R"
+            printf '    %sthat is missing. Your firewall is NOT changed until you choose%s\n' "$TXT" "$R"
+            printf '    %s4 "Build / rebuild gateway" in the menu.%s\n\n' "$TXT" "$R"
+            printf '  %s[Enter]%s start setup   %s[q]%s quit ' "$CYN" "$R" "$CYN" "$R"
+        } >"$TTY"
+        read -rsn1 key <"$TTY" || return 1
+        if [[ $key == q || $key == Q ]]; then return 1; fi
+    fi
+
+    banner
+    title "$CYN" "$([[ $1 == welcome ]] && echo "System setup" || echo "Missing components detected")" >"$TTY"
+
+    # 1) Component check
+    printf '\n   %sCOMPONENTS%s\n' "$MAG" "$R" >"$TTY"
+    for line in "${DEPS[@]}"; do
+        IFS='|' read -r cmd pkg req desc <<<"$line"
+        if command -v "$cmd" >/dev/null 2>&1; then
+            printf '    %s✔%s %s%-10s%s %s%s%s\n' "$GRN" "$R" "$WHT" "$cmd" "$R" "$GRY" "$desc" "$R" >"$TTY"
+        else
+            printf '    %s✘%s %s%-10s%s %s%s%s  %s(missing - package %s)%s\n' "$YLW" "$R" "$WHT" "$cmd" "$R" "$GRY" "$desc" "$R" "$YLW" "$pkg" "$R" >"$TTY"
+            [[ " ${pkgs[*]} " == *" $pkg "* ]] || pkgs+=("$pkg")
+        fi
+    done
+
+    # 2) Install bar 0-100 %
+    printf '\n   %sINSTALLATION%s\n' "$MAG" "$R" >"$TTY"
+    if (( ${#pkgs[@]} == 0 )); then
+        draw_bar 100 "All components already present"
+        printf '\n' >"$TTY"
+    else
+        log "Setup: installing ${pkgs[*]}"
+        n=$(( ${#pkgs[@]} + 1 ))
+        step=$(( 100 / n ))
+        if progress_step 0 "$step" "Updating package lists" apt_update; then
+            step_line ok "Package lists updated"
+        else
+            step_line warn "Package list update failed (no internet?) - trying anyway"
+        fi
+        for i in "${!pkgs[@]}"; do
+            from=$(( (i + 1) * step ))
+            to=$(( i == ${#pkgs[@]} - 1 ? 100 : (i + 2) * step ))
+            if progress_step "$from" "$to" "Installing ${pkgs[$i]}" apt_install "${pkgs[$i]}"; then
+                step_line ok "Installed ${pkgs[$i]}"
+            else
+                step_line fail "Could not install ${pkgs[$i]} - see $LOG_FILE"
+            fi
+        done
+        draw_bar 100 "Installation finished"
+        printf '\n' >"$TTY"
+    fi
+
+    # 3) Validation
+    printf '\n   %sVALIDATION%s\n' "$MAG" "$R" >"$TTY"
+    step_line ok "Running as root"
+    if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null; then
+        step_line ok "systemd is running (needed for the background watcher)"
+    else
+        step_line fail "systemd not running - the background watcher can't work"; problems=1
+    fi
+    for line in "${DEPS[@]}"; do
+        IFS='|' read -r cmd pkg req desc <<<"$line"
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            if (( req )); then step_line fail "Required: $cmd ($pkg) is still missing"; problems=1
+            else step_line warn "Optional: $cmd ($pkg) missing - $desc unavailable"; fi
+        fi
+    done
+    if command -v iptables >/dev/null && iptables -w 5 -L -n >/dev/null 2>&1; then
+        step_line ok "iptables works ($(iptables --version 2>/dev/null | awk '{print $2, $3}'))"
+    else
+        step_line fail "iptables can't access the kernel firewall"; problems=1
+    fi
+    if [[ -w /proc/sys/net/ipv4/ip_forward ]]; then
+        step_line ok "IP forwarding can be enabled"
+    else
+        step_line fail "IP forwarding can't be changed on this system"; problems=1
+    fi
+
+    if (( problems )); then
+        log "Setup: validation FAILED"
+        msg "Setup could not complete - see the red lines above.\nFix them (or check $LOG_FILE) and start the script again." "Setup incomplete"
+        return 1
+    fi
+    echo "$VERSION $(date '+%F %T')" >"$SETUP_MARKER"
+    log "Setup: completed for v$VERSION"
+    printf '\n  %s✔ System ready.%s  %s[Enter]%s open the dashboard ' "$GRN" "$R" "$CYN" "$R" >"$TTY"
+    read -rsn1 _ <"$TTY" || true
+    return 0
+}
+
+# =============================================================================
 #  Start
 # =============================================================================
 need_root() {
@@ -1499,12 +1662,14 @@ need_root() {
     touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
 }
 
-preflight() {
+preflight() {  # $1 = check (headless: missing commands are fatal) | setup (interactive)
     local cmd
     need_root
-    for cmd in iptables ip6tables ip sysctl systemctl; do
-        command -v "$cmd" >/dev/null || { printf '%sMissing command: %s%s\n' "$RED" "$cmd" "$R"; exit 1; }
-    done
+    if [[ ${1:-check} == check ]]; then
+        for cmd in iptables ip6tables ip sysctl systemctl flock; do
+            command -v "$cmd" >/dev/null || { printf '%sMissing command: %s - run "sudo %s" once to install it%s\n' "$RED" "$cmd" "$0" "$R"; exit 1; }
+        done
+    fi
     FAIL_FILE=$(mktemp)
     trap 'rm -f "$FAIL_FILE"; printf "\033[0m"' EXIT
 }
@@ -1543,14 +1708,17 @@ main() {
             ;;
         "")
             if [[ ! -t 0 || ! -t 1 ]]; then echo "Interactive mode needs a terminal (or use --apply)."; exit 1; fi
-            preflight
+            preflight setup
             set_palette ui
             trap 'printf "\033[0m\033[2J\033[H"; exit 130' INT
+            if [[ ! -f $SETUP_MARKER ]]; then
+                run_setup welcome || { printf '\033[0m\033[2J\033[H'; exit 1; }
+            elif [[ -n $(missing_deps) ]]; then
+                run_setup repair || { printf '\033[0m\033[2J\033[H'; exit 1; }
+            fi
             if [[ -f $CONF_FILE || -f $OLD_CONF_FILE ]]; then
                 load_config
             else
-                banner
-                msg "Welcome!\n\nNo saved settings found. Connect your VPN, then use\n'Detect VPN provider' - or set things up under Settings.\n\nGood to know: the kill switch protects the LAN CLIENTS routed\nthrough this gateway - this machine's own traffic is NOT blocked.\n\nSettings are stored in $CONF_FILE." "First run"
                 save_config
             fi
             main_menu

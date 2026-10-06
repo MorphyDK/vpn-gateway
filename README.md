@@ -1,6 +1,3 @@
-# vpn-gateway
-🛡️ VPN gateway for your LAN with kill switch, port forwarding and auto-follow for TorGuard &amp; Proton VPN (NAT-PMP keep-alive). Live terminal dashboard.
-
 <div align="center">
 
 # 🛡️ VPN Gateway
@@ -9,7 +6,7 @@
 
 *TorGuard and Proton VPN, auto-detected. A live terminal dashboard. Zero hand-written iptables.*
 
-[![Version](https://img.shields.io/badge/version-1.0-blue?style=for-the-badge)](#-changelog)
+[![Version](https://img.shields.io/badge/version-1.1-blue?style=for-the-badge)](#-changelog)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)](#-requirements)
 [![Bash](https://img.shields.io/badge/Bash-5.x-4EAA25?style=for-the-badge&logo=gnubash&logoColor=white)](vpn-gateway.sh)
 [![WireGuard](https://img.shields.io/badge/WireGuard-supported-88171A?style=for-the-badge&logo=wireguard&logoColor=white)](#-supported-providers)
@@ -110,7 +107,7 @@ Detection is based on **the interface your traffic actually leaves through**. Le
 | 🔐 **A VPN connection** | TorGuard (WireGuard / OpenConnect) and/or Proton VPN (app or WireGuard config) |
 | 🖧 **Static LAN IPs** | For both the gateway and the client that receives the forwarded ports |
 | 🟣 **Proton port forwarding** | Needs a **paid plan**, a **P2P server** and port forwarding / NAT-PMP enabled |
-| 📦 **Packages** | `natpmpc` and `iptables-persistent` are installed automatically when needed |
+| 📦 **Packages** | Installed automatically by the first-run setup (see below) |
 | 🌍 **curl** *(optional)* | Shows your public IP through the tunnel in the status screen |
 
 ---
@@ -128,6 +125,49 @@ chmod +x vpn-gateway.sh
 # 3. Connect your VPN, then run
 sudo ./vpn-gateway.sh
 ```
+
+### 🧰 First-run setup
+
+The first time you start the script, it shows a **welcome screen** and runs a **system setup** before the dashboard opens:
+
+```
+  ▌ SYSTEM SETUP
+
+   COMPONENTS
+    ✔ iptables   firewall rules: kill switch, NAT, port forwarding
+    ✔ ip         interfaces and routing
+    ✘ curl       public IP through the tunnel  (missing - package curl)
+    ✘ natpmpc    Proton VPN port forwarding (NAT-PMP)  (missing - package natpmpc)
+
+   INSTALLATION
+    ✔ Package lists updated
+    ✔ Installed curl
+    ✔ Installed natpmpc
+  [████████████████████████████████████████] 100%  Installation finished
+
+   VALIDATION
+    ✔ Running as root
+    ✔ systemd is running (needed for the background watcher)
+    ✔ iptables works (v1.8.10 (nf_tables))
+    ✔ IP forwarding can be enabled
+
+  ✔ System ready.  [Enter] open the dashboard
+```
+
+| Component | Package | Needed for |
+|---|---|---|
+| `iptables`, `ip6tables` | iptables | Kill switch, NAT, port forwarding, IPv6 leak protection |
+| `ip` | iproute2 | Interfaces and routing |
+| `sysctl`, `pgrep` | procps | IP forwarding, VPN app detection |
+| `flock` | util-linux | Safe, serialised rebuilds |
+| `ping` *(optional)* | iputils-ping | Client reachability check |
+| `curl` *(optional)* | curl | Public IP through the tunnel |
+| `natpmpc` *(optional)* | natpmpc | Proton VPN port forwarding |
+| `netfilter-persistent` | iptables-persistent | Installed later, when you first save rules (it removes UFW, and you're asked first) |
+
+Your firewall is **not touched** during setup. Nothing changes until you choose **4 Build**. On later starts the check runs silently, and the setup screen only comes back if something has gone missing.
+
+### ▶ Build your gateway
 
 Follow the setup order shown on the dashboard:
 
@@ -157,7 +197,7 @@ A live terminal UI with a black background and colour-coded status. It **refresh
 
 ```
   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   ▓▒░ V P N   G A T E W A Y  v1.0    // kill switch · port forwarding
+   ▓▒░ V P N   G A T E W A Y  v1.1    // kill switch · port forwarding
   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
    VPN          ● UP    Proton VPN  proton0  10.2.0.2
@@ -352,6 +392,7 @@ proton0        wireguard  10.2.0.2        Proton VPN
 | Path | Purpose |
 |---|---|
 | `/etc/vpn-gateway.conf` | Your saved settings (root only, `600`) |
+| `/etc/vpn-gateway.setup` | Marks the first-run setup as done (delete it to see the welcome again) |
 | `/etc/sysctl.d/99-vpn-gateway.conf` | IP forwarding and leak protection |
 | `/etc/iptables/rules.v4` / `rules.v6` | Persistent rules (once saved) |
 | `/etc/systemd/system/vpn-gateway-keeper.service` | The background watcher |
@@ -454,6 +495,7 @@ sudo rm /etc/vpn-gateway.conf /usr/local/sbin/vpn-gateway.sh /var/log/vpn-gatewa
 
 | Version | Changes |
 |---|---|
+| **1.1** | 🧰 First-run welcome screen and system setup: component check, install progress bar 0-100%, system validation, automatic repair of missing components |
 | **1.0** | 🎉 First public release: auto-detect and auto-follow for TorGuard and Proton VPN, Proton NAT-PMP keep-alive with a port follower, kill switch, port forwarding, live terminal dashboard, kill switch test, leak protection, watcher service |
 
 ---
@@ -471,5 +513,3 @@ Released under the [MIT License](LICENSE). © 2026 MorphyDK
 Made with ☕ and a healthy fear of IP leaks
 
 </div>
-
-Built by MorphyDK with help from [Claude](https://claude.ai) by Anthropic. 🤖
