@@ -138,6 +138,7 @@ The first time you start the script, it shows a **welcome screen** and runs a **
     ✔ ip         interfaces and routing
     ✘ curl       public IP through the tunnel  (missing - package curl)
     ✘ natpmpc    Proton VPN port forwarding (NAT-PMP)  (missing - package natpmpc)
+    ✔ wg         WireGuard tunnels (wg / wg-quick configs)
 
    INSTALLATION
     ✔ Package lists updated
@@ -163,6 +164,7 @@ The first time you start the script, it shows a **welcome screen** and runs a **
 | `ping` *(optional)* | iputils-ping | Client reachability check |
 | `curl` *(optional)* | curl | Public IP through the tunnel |
 | `natpmpc` *(optional)* | natpmpc | Proton VPN port forwarding |
+| `wg` *(optional)* | wireguard-tools | WireGuard tunnels (`wg` / `wg-quick` configs, e.g. TorGuard) |
 | `netfilter-persistent` | iptables-persistent | Installed later, when you first save rules (it removes UFW, and you're asked first) |
 
 Your firewall is **not touched** during setup. Nothing changes until you choose **4 Build**. On later starts the check runs silently, and the setup screen only comes back if something has gone missing.

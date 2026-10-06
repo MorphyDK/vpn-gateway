@@ -55,6 +55,7 @@ DEPS=(
     "ping|iputils-ping|0|client reachability check"
     "curl|curl|0|public IP through the tunnel"
     "natpmpc|natpmpc|0|Proton VPN port forwarding (NAT-PMP)"
+    "wg|wireguard-tools|0|WireGuard tunnels (wg / wg-quick configs)"
 )
 LOCK_FILE="/run/vpn-gateway.lock"
 IN_SERVICE=0                 # 1 when running as the background watcher
